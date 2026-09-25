@@ -12,8 +12,8 @@
   <!--
     DAVATAR / iOS compatibility addition:
     iOS 13 and later require NSBluetoothAlwaysUsageDescription before an app
-    can access CoreBluetooth.  The host app may replace this default string at
-    install time through the BLUETOOTH_USAGE_DESCRIPTION variable.
+    can access CoreBluetooth. The host app may replace this default string at
+    install time through the BLUETOOTH_USAGE_DESCRIPTION preference.
   -->
   <preference name="BLUETOOTH_USAGE_DESCRIPTION" default="This app uses Bluetooth to connect to nearby devices." />
   <js-module src="www/bluetoothle.js" name="BluetoothLe">
