@@ -15,6 +15,10 @@
   int requestId;
   NSMutableDictionary* requestsHash;
   NSMutableDictionary* servicesHash;
+  // DAVATAR legacy Mekong compatibility addition:
+  // Cordova callback ID for responseData().  It remains alive to deliver BLE
+  // notification packets that older Mekong devices use as command responses.
+  NSString* responseCallbackId;
 
   BOOL writeQIsRunning;
   int writeQtype;
@@ -45,6 +49,8 @@
 - (void)subscribe:(CDVInvokedUrlCommand *)command;
 - (void)unsubscribe:(CDVInvokedUrlCommand *)command;
 - (void)write:(CDVInvokedUrlCommand *)command;
+// DAVATAR legacy Mekong compatibility addition; see responseCallbackId above.
+- (void)responseData:(CDVInvokedUrlCommand *)command;
 - (void)writeQ:(CDVInvokedUrlCommand *)command;
 - (void)readDescriptor:(CDVInvokedUrlCommand *)command;
 - (void)writeDescriptor:(CDVInvokedUrlCommand *)command;

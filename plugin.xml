@@ -9,6 +9,13 @@
   <author>Rand Dusing</author>
   <keywords>bluetooth,bluetoothle,bluetooth le,cordova</keywords>
   <license>MIT</license>
+  <!--
+    DAVATAR / iOS compatibility addition:
+    iOS 13 and later require NSBluetoothAlwaysUsageDescription before an app
+    can access CoreBluetooth.  The host app may replace this default string at
+    install time through --variable BLUETOOTH_USAGE_DESCRIPTION.
+  -->
+  <preference name="BLUETOOTH_USAGE_DESCRIPTION" default="This app uses Bluetooth to connect to nearby devices." />
   <js-module src="www/bluetoothle.js" name="BluetoothLe">
     <clobbers target="window.bluetoothle" />
   </js-module>
@@ -40,6 +47,11 @@
     <header-file src="src/ios/BluetoothLePlugin.h" />
     <source-file src="src/ios/BluetoothLePlugin.m" />
     <framework src="CoreBluetooth.framework" />
+    <!-- DAVATAR / iOS compatibility addition: writes the required Bluetooth
+         privacy message into the consuming app's Info.plist. -->
+    <edit-config file="*-Info.plist" mode="merge" target="NSBluetoothAlwaysUsageDescription">
+      <string>$BLUETOOTH_USAGE_DESCRIPTION</string>
+    </edit-config>
   </platform>
   <platform name="osx">
     <config-file target="config.xml" parent="/*">

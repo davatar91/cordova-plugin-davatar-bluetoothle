@@ -179,7 +179,14 @@ Scanning works differently in the background. There seem to be three different s
 
 
 ## Usage Description (iOS) ##
-iOS now requires a usage description in the plist file. Use the following plugin to easily customize it: [cordova-plugin-bluetooth-peripheral-usage-description](https://github.com/randdusing/cordova-plugin-bluetooth-peripheral-usage-description)
+The plugin adds `NSBluetoothAlwaysUsageDescription`, required by modern iOS releases. Override its text when installing:
+
+```
+cordova plugin add cordova-plugin-bluetoothle --variable BLUETOOTH_USAGE_DESCRIPTION="Connect to nearby Bluetooth devices"
+```
+
+## Legacy Mekong response stream (iOS) ##
+`responseData(successCallback, errorCallback)` enables compatibility with older Mekong devices that return application-level responses as BLE notifications after a write. It is opt-in: callers that do not use it retain the standard CoreBluetooth write acknowledgement behavior. The callback stays active until another `responseData` call replaces it or the plugin is disposed.
 
 
 ## Discovery Quirks (iOS vs Android) ##

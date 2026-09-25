@@ -102,6 +102,13 @@ var bluetoothle = {
   write: function(successCallback, errorCallback, params) {
     cordova.exec(successCallback, errorCallback, bluetoothleName, "write", [params]);
   },
+  // DAVATAR legacy Mekong compatibility addition (iOS): opens a persistent
+  // response stream for application-level BLE notification packets.  This is
+  // intentionally separate from subscribe(); use it only with the older
+  // Mekong command protocol.  Calling it again replaces the prior stream.
+  responseData: function(successCallback, errorCallback) {
+    cordova.exec(successCallback, errorCallback, bluetoothleName, "responseData", []);
+  },
   writeQ: function(successCallback, errorCallback, params) {
     cordova.exec(successCallback, errorCallback, bluetoothleName, "writeQ", [params]);
   },

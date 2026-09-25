@@ -144,6 +144,28 @@ NSString *const operationSubscribe = @"subscribe";
 NSString *const operationUnsubscribe = @"unsubscribe";
 NSString *const operationWrite = @"write";
 
+// BEGIN DAVATAR LEGACY MEKONG COMPATIBILITY
+//
+// The older Mekong device protocol puts the actual command result in a BLE
+// notification instead of solely using CoreBluetooth's write acknowledgement.
+// These packet prefixes are asynchronous device events, not a completion for
+// the pending write, and must be forwarded to responseData() instead:
+//   65 02 - device power/control event
+//   65 03 - device cover operation event
+//   64 01 - latest sensor/server data event
+// Check length before reading the first two bytes: malformed or empty BLE
+// packets must never cause an out-of-bounds read.
+static BOOL isLegacyResponseCommand(NSData* value) {
+  if (value.length < 2) {
+    return NO;
+  }
+
+  const uint8_t* bytes = value.bytes;
+  return (bytes[0] == 0x65 && bytes[1] == 0x02) ||
+         (bytes[0] == 0x65 && bytes[1] == 0x03) ||
+         (bytes[0] == 0x64 && bytes[1] == 0x01);
+}
+
 @implementation BluetoothLePlugin
 
 //Peripheral Manager Functions
@@ -241,7 +263,10 @@ NSString *const operationWrite = @"write";
       }
     }
 
-    CBCharacteristic* characteristic = [[CBMutableCharacteristic alloc] initWithType:characteristicUuid properties:properties value:nil permissions:permissions];
+    // DAVATAR / modern iOS SDK compatibility: this object is created mutable
+    // and is later passed to CBPeripheralManager's mutable-service APIs. Keep
+    // the concrete type instead of erasing it to CBCharacteristic*.
+    CBMutableCharacteristic* characteristic = [[CBMutableCharacteristic alloc] initWithType:characteristicUuid properties:properties value:nil permissions:permissions];
 
     [characteristics addObject:characteristic];
   }
@@ -250,6 +275,13 @@ NSString *const operationWrite = @"write";
 
   addServiceCallback = command.callbackId;
 
+  // DAVATAR / modern iOS SDK peripheral compatibility: keep the exact
+  // CBMutableService instance before adding it. The peripheral
+  // manager later requires this mutable instance for both removeService: and
+  // updateValue:forCharacteristic:onSubscribedCentrals:. Its delegate callback
+  // exposes only CBService*/CBCharacteristic* base types, which cannot safely
+  // be used for those mutable APIs.
+  [servicesHash setObject:service forKey:service.UUID];
   [peripheralManager addService:service];
 }
 
@@ -257,7 +289,9 @@ NSString *const operationWrite = @"write";
   NSDictionary* obj = (NSDictionary *)[command.arguments objectAtIndex:0];
   CBUUID* serviceUuid = [CBUUID UUIDWithString:[obj valueForKey:@"service"]];
 
-  CBService* service = [servicesHash objectForKey:serviceUuid];
+  // DAVATAR / modern iOS SDK peripheral compatibility: the hash owns only
+  // CBMutableService objects; removeService: requires that concrete type.
+  CBMutableService* service = [servicesHash objectForKey:serviceUuid];
   if (!service) {
     NSMutableDictionary* returnObj = [NSMutableDictionary dictionary];
     [returnObj setValue:serviceUuid.UUIDString forKey:@"service"];
@@ -267,9 +301,10 @@ NSString *const operationWrite = @"write";
     CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:returnObj];
     [pluginResult setKeepCallbackAsBool:false];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+    return;
   }
 
-  [peripheralManager removeService:service]; //Need to store CBMutableService
+  [peripheralManager removeService:service];
 
   [servicesHash removeObjectForKey:service.UUID];
 
@@ -425,7 +460,9 @@ NSString *const operationWrite = @"write";
   NSDictionary* obj = (NSDictionary *)[command.arguments objectAtIndex:0];
 
   CBUUID* serviceUuid = [CBUUID UUIDWithString:[obj valueForKey:@"service"]];
-  CBService* service = [servicesHash objectForKey:serviceUuid];
+  // DAVATAR / modern iOS SDK peripheral compatibility: notify operations
+  // below require mutable service and characteristic instances.
+  CBMutableService* service = [servicesHash objectForKey:serviceUuid];
   if (!service) {
     NSMutableDictionary* returnObj = [NSMutableDictionary dictionary];
     [returnObj setValue:serviceUuid.UUIDString forKey:@"service"];
@@ -439,8 +476,9 @@ NSString *const operationWrite = @"write";
   }
 
   CBUUID* characteristicUuid = [CBUUID UUIDWithString:[obj valueForKey:@"characteristic"]];
-  CBCharacteristic* checkCharacteristic = nil;
-  for (CBCharacteristic* characteristic in service.characteristics) {
+  // The characteristics were created as CBMutableCharacteristic instances.
+  CBMutableCharacteristic* checkCharacteristic = nil;
+  for (CBMutableCharacteristic* characteristic in service.characteristics) {
     if ([characteristic.UUID isEqual:characteristicUuid]) {
       checkCharacteristic = characteristic;
       break;
@@ -461,7 +499,9 @@ NSString *const operationWrite = @"write";
 
   NSData* value = [self getValue:obj];
 
-  BOOL result = [peripheralManager updateValue:value forCharacteristic:checkCharacteristic onSubscribedCentrals:nil]; //TODO need to store CBMutableCharacteristic
+  // DAVATAR / modern iOS SDK peripheral compatibility: checkCharacteristic is
+  // the stored CBMutableCharacteristic required by updateValue:.
+  BOOL result = [peripheralManager updateValue:value forCharacteristic:checkCharacteristic onSubscribedCentrals:nil];
 
   NSNumber* resultAsObject = [NSNumber numberWithBool:result];
 
@@ -530,6 +570,10 @@ NSString *const operationWrite = @"write";
   }
 
   if (error) {
+    // The service was stored before addService: so remove it if CoreBluetooth
+    // rejects the request; otherwise future remove/notify calls could use a
+    // service that was never actually registered.
+    [servicesHash removeObjectForKey:service.UUID];
     NSMutableDictionary* returnObj = [NSMutableDictionary dictionary];
     [returnObj setValue:service.UUID.UUIDString forKey:@"service"];
     [returnObj setValue:@"service" forKey:@"error"];
@@ -540,8 +584,6 @@ NSString *const operationWrite = @"write";
     [self.commandDelegate sendPluginResult:pluginResult callbackId:addServiceCallback];
     return;
   }
-
-  [servicesHash setObject:service forKey:service.UUID];
 
   NSMutableDictionary* returnObj = [NSMutableDictionary dictionary];
   [returnObj setValue:service.UUID.UUIDString forKey:@"service"];
@@ -1540,6 +1582,16 @@ NSString *const operationWrite = @"write";
   //Get the write type (response or no response)
   int writeType = [self getWriteType:obj];
 
+  // DAVATAR legacy Mekong compatibility: clients that registered responseData()
+  // expect a device notification to carry the application-level response to a
+  // write. Enable notifications on the same characteristic only in this
+  // opt-in mode, so standard plugin users retain CoreBluetooth's usual write
+  // acknowledgement behavior. The subscription-state callback is asynchronous;
+  // this deliberately preserves the timing of the old customized plugin.
+  if (responseCallbackId != nil && !characteristic.isNotifying) {
+    [peripheral setNotifyValue:true forCharacteristic:characteristic];
+  }
+
   //Try to write value
   [peripheral writeValue:value forCharacteristic:characteristic type:writeType];
 
@@ -1558,6 +1610,16 @@ NSString *const operationWrite = @"write";
     [pluginResult setKeepCallbackAsBool:false];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
   }
+}
+
+- (void)responseData:(CDVInvokedUrlCommand *)command {
+  // DAVATAR legacy Mekong compatibility: keep exactly one long-lived Cordova
+  // callback. Cordova will retain it because every emitted packet below uses
+  // setKeepCallbackAsBool:true. A later responseData() call deliberately
+  // replaces this callback, which is how the historical customized plugin
+  // behaved. This method intentionally sends no immediate result: its success
+  // callback receives the next matching device notification.
+  responseCallbackId = [command.callbackId copy];
 }
 
 - (void)writeQ:(CDVInvokedUrlCommand *)command {
@@ -2641,15 +2703,53 @@ NSString *const operationWrite = @"write";
   if (characteristic.isNotifying) {
     NSString* callback = [self getCallback:characteristic.UUID forConnection:connection forOperationType:operationSubscribe];
 
-    if (callback == nil) {
+    // Standard plugin path: a regular subscribe() callback always owns its
+    // packets and must take precedence over the DAVATAR compatibility stream.
+    if (callback != nil) {
+      [returnObj setValue:statusSubscribedResult forKey:keyStatus];
+
+      CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:returnObj];
+      [pluginResult setKeepCallbackAsBool:true];
+      [self.commandDelegate sendPluginResult:pluginResult callbackId:callback];
       return;
     }
 
-    [returnObj setValue:statusSubscribedResult forKey:keyStatus];
+    // BEGIN DAVATAR LEGACY MEKONG COMPATIBILITY
+    // No ordinary subscribe() callback owns this notification. If the JS layer
+    // registered responseData(), route it using the old Mekong semantics:
+    //  1. A pending read always wins; read() must keep standard behavior.
+    //  2. A pending write is completed only by a non-event packet.
+    //  3. The three event prefixes identified by isLegacyResponseCommand(), or
+    //     any packet with no pending write, are emitted on responseData().
+    // This preserves normal subscribe() behavior above and is opt-in because
+    // the branch runs only after responseData() has been called.
+    if (responseCallbackId != nil) {
+      NSString* readCallback = [self getCallback:characteristic.UUID forConnection:connection forOperationType:operationRead];
+      if (readCallback != nil) {
+        [returnObj setValue:statusRead forKey:keyStatus];
+        CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:returnObj];
+        [pluginResult setKeepCallbackAsBool:false];
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:readCallback];
+        [self removeCallback:characteristic.UUID forConnection:connection forOperationType:operationRead];
+        return;
+      }
 
-    CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:returnObj];
-    [pluginResult setKeepCallbackAsBool:true];
-    [self.commandDelegate sendPluginResult:pluginResult callbackId:callback];
+      NSString* writeCallback = [self getCallback:characteristic.UUID forConnection:connection forOperationType:operationWrite];
+      if (writeCallback != nil && !isLegacyResponseCommand(characteristic.value)) {
+        [returnObj setValue:statusWritten forKey:keyStatus];
+        CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:returnObj];
+        [pluginResult setKeepCallbackAsBool:false];
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:writeCallback];
+        [self removeCallback:characteristic.UUID forConnection:connection forOperationType:operationWrite];
+        return;
+      }
+
+      [returnObj setValue:@"response" forKey:keyStatus];
+      CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:returnObj];
+      [pluginResult setKeepCallbackAsBool:true];
+      [self.commandDelegate sendPluginResult:pluginResult callbackId:responseCallbackId];
+    }
+    // END DAVATAR LEGACY MEKONG COMPATIBILITY
   } else {
     NSString* callback = [self getCallback:characteristic.UUID forConnection:connection forOperationType:operationRead];
 
@@ -2730,7 +2830,6 @@ NSString *const operationWrite = @"write";
   } else {
     //Get the proper callback for write operation
     NSString* callback = [self getCallback:characteristic.UUID forConnection:connection forOperationType:operationWrite];
-    [self removeCallback:characteristic.UUID forConnection:connection forOperationType:operationWrite];
 
     //Return if callback is null
     if (callback == nil) {
@@ -2744,6 +2843,10 @@ NSString *const operationWrite = @"write";
 
     //If error exists, return error
     if (error != nil) {
+      // DAVATAR compatibility changes callback lifetime: only consume it now
+      // for an actual CoreBluetooth transport error. A successful ACK may need
+      // to wait for the subsequent application-level notification.
+      [self removeCallback:characteristic.UUID forConnection:connection forOperationType:operationWrite];
       [returnObj setValue:errorWrite forKey:keyError];
       [returnObj setValue:error.description forKey:keyMessage];
 
@@ -2752,6 +2855,17 @@ NSString *const operationWrite = @"write";
       [self.commandDelegate sendPluginResult:pluginResult callbackId:callback];
       return;
     }
+
+    // DAVATAR legacy Mekong compatibility: in this opt-in mode, the successful
+    // CoreBluetooth ACK only confirms BLE transport delivery.  Keep the write
+    // callback pending for didUpdateValueForCharacteristic:, where the device's
+    // application-level notification determines completion. Errors above still
+    // consume the callback immediately, so a failed BLE write cannot hang.
+    if (responseCallbackId != nil) {
+      return;
+    }
+
+    [self removeCallback:characteristic.UUID forConnection:connection forOperationType:operationWrite];
 
     //Add characteristic value to object
     [self addValue:characteristic.value toDictionary:returnObj];
